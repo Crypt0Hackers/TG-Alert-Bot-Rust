@@ -1,0 +1,5 @@
+# Overwatch
+
+Overwatch is a system designed to monitor on-chain activity with the end goal of being able to integrate with protocols to autonomously detect malicious activity in the mempool and, using MEV tactics, `pause` the protocol before the malicious transaction is executed. Overwatch also aims to implement a real-time notification system to alert relevant stakeholders of potential malicious activity. Lastly Overwatch aims to work alongside `Incident Response` teams to track and monitor `high risk` protocols for malicious activity and identify malicious actors (such as `Nation State` actors), to aid with IR procedures.
+
+The basis of Overwatch is born from my belief that there is a lack of tooling for monitoring the state of the blockchain. I believe all the data needed to build a system like this is available on-chain & in the `mempool` which is why understanding and using `MEV` tactics **_MAY_** be pivotal. Furthermore, with the inevitable rise of AI, I believe designing a system that can accurately and autonomously analyse and interact with existing on-chain systems will help Overwatch reach its end goal.
