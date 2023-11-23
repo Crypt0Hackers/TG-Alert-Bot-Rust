@@ -2,7 +2,7 @@ use mev_overwatch::run;
 
 #[tokio::main]
 async fn main() {
-    println!("MEV Detection System Started");
+    println!("CryptoSentinel is watching...");
 
     dotenv::dotenv().ok();
 
