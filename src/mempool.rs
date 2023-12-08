@@ -20,7 +20,7 @@ pub async fn loop_mempool(ws_provider: Arc<Provider<Ws>>) {
     println!("---------- MONITORING MEMPOOL ----------");
     while let Some(maybe_tx) = tx_stream.next().await {
         if let Ok(tx) = maybe_tx {
-            let (tx_data, tx_from, tx_to, tx_value) = decode_tx(&tx);
+            let (tx_data, tx_from, tx_to, tx_value) = extract_tx_fields(&tx);
             let heuristics_results = run_heuristics(&tx.hash, &tx_from, &tx_to, &tx_value);
 
             let mut decoded_abi = String::new();
@@ -40,7 +40,7 @@ pub async fn loop_mempool(ws_provider: Arc<Provider<Ws>>) {
                 }
             }
 
-            let decoded_tx_data = decode_tx_data(&tx_data, &decoded_abi);
+            let decoded_tx_data = decode_tx(&tx_data, &decoded_abi);
             // If the decoding was successful, print the decoded data
             if let Ok(_) = decoded_tx_data {
                 println!("Decoded tx data: {:?}", decoded_tx_data);
@@ -50,7 +50,7 @@ pub async fn loop_mempool(ws_provider: Arc<Provider<Ws>>) {
 }
 
 // Extracts the transaction data from a transaction receipt.
-fn decode_tx(tx: &Transaction) -> (Bytes, H160, Option<H160>, U256) {
+fn extract_tx_fields(tx: &Transaction) -> (Bytes, H160, Option<H160>, U256) {
     let tx_data = &tx.input;
     let tx_from = &tx.from;
     let tx_to = &tx.to;
@@ -92,7 +92,7 @@ fn run_heuristics(
 }
 
 // Extract contract ABI using Etherscan API.
-async fn get_contract_abi<'a>(contract_address: Option<H160>) -> Result<String, Box<dyn Error>> {
+async fn get_contract_abi(contract_address: Option<H160>) -> Result<String, Box<dyn Error>> {
     let etherscan_key = env::var("ETHERSCAN_API_KEY").expect("missing ETHERSCAN_API_KEY");
 
     // Handle the case where contract_address is None
@@ -119,7 +119,7 @@ async fn get_contract_abi<'a>(contract_address: Option<H160>) -> Result<String, 
 }
 
 // Decodes the transaction data using the contract ABI.
-fn decode_tx_data(tx_data: &Bytes, abi: &String) -> Result<Vec<Token>, Box<dyn Error>> {
+fn decode_tx(tx_data: &Bytes, abi: &String) -> Result<Vec<Token>, Box<dyn Error>> {
     // Parse the ABI
     let abi: Abi = serde_json::from_str(abi)?;
 
