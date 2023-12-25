@@ -21,3 +21,5 @@ tokio = { version = "1.5", features = ["macros", "rt-multi-thread"] }
 
 # For quick and easy discord alerts.
 reqwest = "0.11.10"
+
+#[warn(dead_code)] = false
