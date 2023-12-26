@@ -1,6 +1,7 @@
 pub mod block_scanner;
 pub mod helpers;
 pub mod mempool;
+pub mod tg_bot;
 
 use std::sync::Arc;
 
@@ -37,6 +38,11 @@ pub async fn run() {
     // Thread for checking what block we're on.
     tokio::spawn(async move {
         block_scanner::loop_blocks(Arc::clone(&config.http)).await;
+    });
+
+    // Thread for listening to Telegram messages.
+    tokio::spawn(async move {
+        tg_bot::listen().await;
     });
 
     // Main loop to monitor the mempool.

@@ -1,6 +1,8 @@
 use std::str::FromStr;
 use std::sync::Arc;
 
+use serde::{Deserialize, Serialize};
+
 use reqwest;
 use std::error::Error;
 
@@ -8,22 +10,26 @@ use ethers::providers::{Middleware, Provider, StreamExt, TransactionStream, Ws};
 use ethers::types::{Transaction, H160, H256, U256};
 use std::process::Command;
 
+// Telegram bot token and chat id
+use crate::helpers::{get_tg_config, TelegramConfig};
+
 // CONSTANTS FOR TESTING
 const AAVE_V3_POOL: &str = "0x87870Bca3F3fD6335C3F4ce8392D69350B4fA4E2";
 const UNI_V3_ROUTER: &str = "0xE592427A0AEce92De3Edee1F18E0157C05861564";
 const LIDO_STETH: &str = "0xae7ab96520DE3A18E5e111B5EaAb095312D7fE84";
 
 struct SimpleAlertConfig {
-    monitored_protocols: Vec<H160>,    // List of protocols to monitor
-    alert_conditions: AlertConditions, // Conditions to trigger an alert
+    monitored_protocols: Vec<H160>, // List of protocols to monitor
+    wallet_tracker: Vec<WalletTrackerConfig>, // Conditions to trigger an alert
     invariant_conditions: InvariantConditions, // Conditions to trigger an invariant alert
-    is_custom: bool,                   // Decide whether we use calldata or predefined conditions
-    alert_recipients: Vec<String>,     // List of recipients to send alerts to
+    is_custom: bool,                // Decide whether we use calldata or predefined conditions
+    receive_decoded_tx: bool,       // Decide whether to receive decoded tx data or not
+    chat_id: String,                // Telegram chat id
 }
 
-struct AlertConditions {
-    min_tx_value: U256, // Minimum value of a transaction to trigger an alert
-    monitored_addresses: Vec<H160>, // List of addresses to monitor
+struct WalletTrackerConfig {
+    token_address: H160, // Address of the token to monitor
+    min_tx_value: U256,  // Minimum value of a transaction to trigger an alert
 }
 
 struct InvariantConditions {
@@ -43,7 +49,7 @@ pub async fn loop_mempool(ws_provider: Arc<Provider<Ws>>) {
         if let Ok(tx) = maybe_tx {
             // Check if the transaction is from a monitored protocol and monitored protocols contains at least one address
             if let Some(to_addr) = tx.to {
-                if !alert_config.monitored_protocols.contains(&to_addr)
+                if (!alert_config.monitored_protocols.contains(&to_addr))
                     && !alert_config.monitored_protocols.is_empty()
                 {
                     continue;
@@ -52,79 +58,57 @@ pub async fn loop_mempool(ws_provider: Arc<Provider<Ws>>) {
                 continue;
             }
 
-            // Check if the transaction value is greater than the minimum value
-            if tx.value <= alert_config.alert_conditions.min_tx_value {
-                continue;
-            }
+            // Create empty wallet tracker config for alerts
+            let mut wallet_alerts = WalletTrackerConfig {
+                token_address: H160::from_str("").expect(""),
+                min_tx_value: U256::from(0),
+            };
 
-            // Check if the transaction is from a monitored address
-            if !alert_config
-                .alert_conditions
-                .monitored_addresses
-                .contains(&tx.from)
-                && !alert_config.alert_conditions.monitored_addresses.is_empty()
-            {
-                continue;
+            // Loop through wallet tracker configs and check if the transaction meets the conditions
+            for wallet_tracker_config in &alert_config.wallet_tracker {
+                // Check if the wallet tracker contains a native token alert
+                if wallet_tracker_config.token_address == H160::from_str("").expect("") {
+                    if tx.value >= wallet_tracker_config.min_tx_value {
+                        wallet_alerts.min_tx_value = tx.value;
+                        break;
+                    }
+                }
+
+                // Check if the wallet tracker contains a token alert
+                // Function to extract token transfers and amounts from calldata
             }
 
             // At this point, we have a transaction that meets all the conditions to trigger an alert
-            send_alert(alert_config.alert_recipients.clone(), &tx).await;
+            let mut decoded_tx_data = "".to_string();
 
-            // Contract string representation
-            // let decoded_contract = generate_contract_from_address(&tx.to);
+            if alert_config.receive_decoded_tx {
+                decoded_tx_data = decode_tx_data(&tx);
+                println!("TX Data for this alert: {}", decoded_tx_data);
+            }
+
+            let TelegramConfig { bot_token, chat_id } = get_tg_config().await;
+
+            // Send an alert to the user
+            if let Err(e) =
+                send_telegram_alert(&tx.hash, &decoded_tx_data, &bot_token, &chat_id).await
+            {
+                println!("Error sending alert: {}", e);
+            }
         }
     }
 }
 
-// TODO
-// Function to load user preferences (from file, database, etc.)
-fn get_alert_config() -> SimpleAlertConfig {
-    SimpleAlertConfig {
-        monitored_protocols: vec![
-            H160::from_str(AAVE_V3_POOL).expect("Invalid Address"),
-            H160::from_str(UNI_V3_ROUTER).expect("Invalid Address"),
-            H160::from_str(LIDO_STETH).expect("Invalid Address"),
-        ],
-        alert_conditions: AlertConditions {
-            min_tx_value: U256::from(1 / 100),
-            monitored_addresses: vec![],
-        },
-        invariant_conditions: InvariantConditions {
-            calldata: "".to_string(),
-        },
-        is_custom: false,
-        alert_recipients: vec!["okolobiam@gmail.com"]
-            .iter()
-            .map(|s| s.to_string())
-            .collect(),
-    }
-}
-
-// TODO
-// Function to send alerts to users
-async fn send_alert(alert_recipients: Vec<String>, tx: &Transaction) {
-    for recipient in alert_recipients {
-        println!("Sending alert to {}", recipient);
-    }
-
-    // TX string representation
-    let decoded_tx_data = generate_text_from_tx(&tx);
-
-    println!("TX Data for this alert: {}", decoded_tx_data);
-
-    if let Err(e) = send_telegram_alert(&tx.hash, &decoded_tx_data).await {
-        println!("Error sending alert: {}", e);
-    }
-}
-
-async fn send_telegram_alert(tx: &H256, decoded_tx_data: &str) -> Result<(), Box<dyn Error>> {
-    let bot_token = std::env::var("TELEGRAM_BOT_TOKEN").expect("missing TELEGRAM_BOT_TOKEN");
-    let chat_id = std::env::var("TELEGRAM_CHAT_ID").expect("missing TELEGRAM_CHAT_ID");
+async fn send_telegram_alert(
+    tx: &H256,
+    decoded_tx_data: &str,
+    bot_token: &str,
+    chat_id: &str,
+) -> Result<(), Box<dyn Error>> {
     let message = format!("An alert was raised for the following transaction: \n\n {:?} \n\nHere's the decoded transaction data: \n {} ", tx, decoded_tx_data);
 
     let client = reqwest::Client::new();
     let telegram_url = format!("https://api.telegram.org/bot{}/sendMessage", bot_token);
-    let params = [("chat_id", chat_id), ("text", message)];
+    let params = [("chat_id", chat_id), ("text", &message)];
 
     client
         .post(&telegram_url)
@@ -137,7 +121,7 @@ async fn send_telegram_alert(tx: &H256, decoded_tx_data: &str) -> Result<(), Box
 }
 
 // Decodes the transaction data using Heimdall
-fn generate_text_from_tx(tx: &Transaction) -> String {
+fn decode_tx_data(tx: &Transaction) -> String {
     let tx_hash = tx.hash();
 
     // Attempt to execute the command
@@ -160,6 +144,28 @@ fn generate_text_from_tx(tx: &Transaction) -> String {
         output_str[start_index + 16..].to_string()
     } else {
         "".to_string()
+    }
+}
+
+// TODO
+// Function to load user preferences (from database using chat_id)
+fn get_alert_config() -> SimpleAlertConfig {
+    SimpleAlertConfig {
+        monitored_protocols: vec![
+            H160::from_str(AAVE_V3_POOL).expect("Invalid Address"),
+            H160::from_str(UNI_V3_ROUTER).expect("Invalid Address"),
+            H160::from_str(LIDO_STETH).expect("Invalid Address"),
+        ],
+        wallet_tracker: vec![WalletTrackerConfig {
+            token_address: H160::from_str("").expect("Invalid Address"),
+            min_tx_value: U256::from(1 / 100),
+        }],
+        invariant_conditions: InvariantConditions {
+            calldata: "".to_string(),
+        },
+        is_custom: false,
+        receive_decoded_tx: true,
+        chat_id: "1782643511".to_string(),
     }
 }
 
