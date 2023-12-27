@@ -1,14 +1,14 @@
+use std::error::Error;
+use std::process::Command;
 use std::str::FromStr;
 use std::sync::Arc;
 
-use serde::{Deserialize, Serialize};
-
 use reqwest;
-use std::error::Error;
 
 use ethers::providers::{Middleware, Provider, StreamExt, TransactionStream, Ws};
-use ethers::types::{Transaction, H160, H256, U256};
-use std::process::Command;
+use ethers::types::{Address, Transaction, H160, H256, U256};
+
+use hex::{decode, encode};
 
 // Telegram bot token and chat id
 use crate::helpers::{get_tg_config, TelegramConfig};
@@ -103,7 +103,7 @@ pub async fn loop_mempool(ws_provider: Arc<Provider<Ws>>) {
 
             let TelegramConfig { bot_token } = get_tg_config().await;
 
-            println!("Alert raised for transaction: {:?}", &wallet_alert.tx_hash);
+            println!("Alert raised for transaction: {:?}", &tx);
 
             // Send an alert to the user
             if let Err(e) = send_telegram_alert(
@@ -132,6 +132,7 @@ async fn send_telegram_alert(
     // Decode the transaction data if the user wants to receive decoded tx data
     if *receive_decoded_tx {
         let decoded_tx_data = decode_tx_data(&alert.tx_hash);
+        println!("{}", &decoded_tx_data);
         message = format!("An alert was raised for the following transaction: \n\n {:?} \n\nHere's the decoded transaction data: \n {} ", &alert.tx_hash, &decoded_tx_data);
     } else {
         message = format!(
@@ -199,6 +200,27 @@ fn get_alert_config() -> SimpleAlertConfig {
         receive_decoded_tx: true,
         chat_id: "1782643511".to_string(),
     }
+}
+
+pub fn extract_token_transfer(tx_data: &str) -> Result<(Address, U256), &'static str> {
+    // Check if the transaction data is a token transfer
+    if tx_data.len() < 138 {
+        return Err("Transaction data is not a token transfer");
+    }
+
+    // Extract the token address and value from the transaction data
+    let token_address = &tx_data[34..74];
+    let token_value = &tx_data[74..138];
+
+    // Decode the token address and value
+    let token_address = decode(token_address).unwrap();
+    let token_value = decode(token_value).unwrap();
+
+    // Convert the token address and value to the correct types
+    let token_address = Address::from_slice(&token_address);
+    let token_value = U256::from_big_endian(&token_value);
+
+    Ok((token_address, token_value))
 }
 
 // Decodes the contract data using Heimdall
