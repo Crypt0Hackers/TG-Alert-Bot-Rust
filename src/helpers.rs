@@ -21,14 +21,12 @@ pub async fn setup_signer(
 
 pub struct TelegramConfig {
     pub bot_token: String,
-    pub chat_id: String,
 }
 
 // Retrieves telegram bot token and chat id from env vars.
 pub async fn get_tg_config() -> TelegramConfig {
     // Load telegram config
     let bot_token = std::env::var("TELEGRAM_BOT_TOKEN").expect("missing TELEGRAM_BOT_TOKEN");
-    let chat_id = std::env::var("TELEGRAM_CHAT_ID").expect("missing TELEGRAM_CHAT_ID");
 
-    TelegramConfig { bot_token, chat_id }
+    TelegramConfig { bot_token }
 }

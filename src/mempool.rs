@@ -32,6 +32,18 @@ struct WalletTrackerConfig {
     min_tx_value: U256,  // Minimum value of a transaction to trigger an alert
 }
 
+struct WalletAlert {
+    tx_hash: H256,
+    token_address: H160,
+    tx_value: U256,
+    is_alert: bool,
+}
+
+// TODO
+struct InvariantAlert {
+    tx_hash: H256,
+}
+// TODO
 struct InvariantConditions {
     calldata: String, // Calldata to trigger an invariant check
 }
@@ -59,38 +71,48 @@ pub async fn loop_mempool(ws_provider: Arc<Provider<Ws>>) {
             }
 
             // Create empty wallet tracker config for alerts
-            let mut wallet_alerts = WalletTrackerConfig {
-                token_address: H160::from_str("").expect(""),
-                min_tx_value: U256::from(0),
+            let mut wallet_alert = WalletAlert {
+                tx_hash: H256::zero(),
+                token_address: H160::zero(),
+                tx_value: U256::zero(),
+                is_alert: false,
             };
 
             // Loop through wallet tracker configs and check if the transaction meets the conditions
             for wallet_tracker_config in &alert_config.wallet_tracker {
                 // Check if the wallet tracker contains a native token alert
-                if wallet_tracker_config.token_address == H160::from_str("").expect("") {
+                if wallet_tracker_config.token_address == H160::zero() {
                     if tx.value >= wallet_tracker_config.min_tx_value {
-                        wallet_alerts.min_tx_value = tx.value;
+                        wallet_alert.is_alert = true;
+                        wallet_alert.tx_hash = tx.hash;
+                        wallet_alert.tx_value = tx.value;
+                        wallet_alert.token_address = H160::zero();
                         break;
                     }
                 }
 
+                // TODO
                 // Check if the wallet tracker contains a token alert
                 // Function to extract token transfers and amounts from calldata
             }
 
-            // At this point, we have a transaction that meets all the conditions to trigger an alert
-            let mut decoded_tx_data = "".to_string();
-
-            if alert_config.receive_decoded_tx {
-                decoded_tx_data = decode_tx_data(&tx);
-                println!("TX Data for this alert: {}", decoded_tx_data);
+            // If no alert was raised, continue to the next transaction
+            if !wallet_alert.is_alert {
+                continue;
             }
 
-            let TelegramConfig { bot_token, chat_id } = get_tg_config().await;
+            let TelegramConfig { bot_token } = get_tg_config().await;
+
+            println!("Alert raised for transaction: {:?}", &wallet_alert.tx_hash);
 
             // Send an alert to the user
-            if let Err(e) =
-                send_telegram_alert(&tx.hash, &decoded_tx_data, &bot_token, &chat_id).await
+            if let Err(e) = send_telegram_alert(
+                &wallet_alert,
+                &bot_token,
+                &alert_config.chat_id,
+                &alert_config.receive_decoded_tx,
+            )
+            .await
             {
                 println!("Error sending alert: {}", e);
             }
@@ -99,15 +121,27 @@ pub async fn loop_mempool(ws_provider: Arc<Provider<Ws>>) {
 }
 
 async fn send_telegram_alert(
-    tx: &H256,
-    decoded_tx_data: &str,
+    alert: &WalletAlert,
     bot_token: &str,
     chat_id: &str,
+    receive_decoded_tx: &bool,
 ) -> Result<(), Box<dyn Error>> {
-    let message = format!("An alert was raised for the following transaction: \n\n {:?} \n\nHere's the decoded transaction data: \n {} ", tx, decoded_tx_data);
+    // Generate the message to send to the user
+    let mut message = "".to_string();
+
+    // Decode the transaction data if the user wants to receive decoded tx data
+    if *receive_decoded_tx {
+        let decoded_tx_data = decode_tx_data(&alert.tx_hash);
+        message = format!("An alert was raised for the following transaction: \n\n {:?} \n\nHere's the decoded transaction data: \n {} ", &alert.tx_hash, &decoded_tx_data);
+    } else {
+        message = format!(
+            "An alert was raised for the following transaction: \n\n {:?}",
+            &alert.tx_hash
+        );
+    }
 
     let client = reqwest::Client::new();
-    let telegram_url = format!("https://api.telegram.org/bot{}/sendMessage", bot_token);
+    let telegram_url = format!("https://api.telegram.org/bot{}/sendMessage", &bot_token);
     let params = [("chat_id", chat_id), ("text", &message)];
 
     client
@@ -121,13 +155,11 @@ async fn send_telegram_alert(
 }
 
 // Decodes the transaction data using Heimdall
-fn decode_tx_data(tx: &Transaction) -> String {
-    let tx_hash = tx.hash();
-
+fn decode_tx_data(tx: &H256) -> String {
     // Attempt to execute the command
     let output = match Command::new("/home/amaechi/.bifrost/bin/heimdall")
         .arg("decode")
-        .arg(format!("{:?}", tx_hash))
+        .arg(format!("{:?}", tx))
         .arg("--truncate-calldata")
         .arg("--rpc-url")
         .arg("https://eth.llamarpc.com")
@@ -141,7 +173,7 @@ fn decode_tx_data(tx: &Transaction) -> String {
 
     // Extract the relevant part of the output
     if let Some(start_index) = output_str.find("heimdall::decode") {
-        output_str[start_index + 16..].to_string()
+        output_str[&start_index + 16..].to_string()
     } else {
         "".to_string()
     }
@@ -152,12 +184,12 @@ fn decode_tx_data(tx: &Transaction) -> String {
 fn get_alert_config() -> SimpleAlertConfig {
     SimpleAlertConfig {
         monitored_protocols: vec![
-            H160::from_str(AAVE_V3_POOL).expect("Invalid Address"),
-            H160::from_str(UNI_V3_ROUTER).expect("Invalid Address"),
-            H160::from_str(LIDO_STETH).expect("Invalid Address"),
+            H160::from_str(AAVE_V3_POOL).unwrap(),
+            H160::from_str(UNI_V3_ROUTER).unwrap(),
+            H160::from_str(LIDO_STETH).unwrap(),
         ],
         wallet_tracker: vec![WalletTrackerConfig {
-            token_address: H160::from_str("").expect("Invalid Address"),
+            token_address: H160::zero(),
             min_tx_value: U256::from(1 / 100),
         }],
         invariant_conditions: InvariantConditions {
