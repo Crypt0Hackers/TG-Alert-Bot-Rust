@@ -6,9 +6,9 @@ use std::sync::Arc;
 use reqwest;
 
 use ethers::providers::{Middleware, Provider, StreamExt, TransactionStream, Ws};
-use ethers::types::{Address, Transaction, H160, H256, U256};
+use ethers::types::{Address, H160, H256, U256};
 
-use hex::{decode, encode};
+use hex::decode;
 
 // Telegram bot token and chat id
 use crate::helpers::{get_tg_config, TelegramConfig};
@@ -80,20 +80,24 @@ pub async fn loop_mempool(ws_provider: Arc<Provider<Ws>>) {
 
             // Loop through wallet tracker configs and check if the transaction meets the conditions
             for wallet_tracker_config in &alert_config.wallet_tracker {
-                // Check if the wallet tracker contains a native token alert
-                if wallet_tracker_config.token_address == H160::zero() {
-                    if tx.value >= wallet_tracker_config.min_tx_value {
-                        wallet_alert.is_alert = true;
-                        wallet_alert.tx_hash = tx.hash;
-                        wallet_alert.tx_value = tx.value;
-                        wallet_alert.token_address = H160::zero();
-                        break;
-                    }
-                }
-
-                // TODO
                 // Check if the wallet tracker contains a token alert
-                // Function to extract token transfers and amounts from calldata
+                match extract_maybe_token_transfer(&tx.input.to_string()) {
+                    Ok((addresses, values)) => {
+                        if addresses.contains(&wallet_tracker_config.token_address)
+                            && values[0] >= wallet_tracker_config.min_tx_value
+                            && !addresses.is_empty()
+                        {
+                            wallet_alert.is_alert = true;
+                            wallet_alert.tx_hash = tx.hash;
+                            wallet_alert.token_address = wallet_tracker_config.token_address;
+                            wallet_alert.tx_value = values[0];
+                            break;
+                        } else {
+                            continue;
+                        }
+                    }
+                    Err(_) => break,
+                };
             }
 
             // If no alert was raised, continue to the next transaction
@@ -103,7 +107,7 @@ pub async fn loop_mempool(ws_provider: Arc<Provider<Ws>>) {
 
             let TelegramConfig { bot_token } = get_tg_config().await;
 
-            println!("Alert raised for transaction: {:?}", &tx);
+            println!("Alert raised for transaction: {:?}", &tx.hash);
 
             // Send an alert to the user
             if let Err(e) = send_telegram_alert(
@@ -131,9 +135,12 @@ async fn send_telegram_alert(
 
     // Decode the transaction data if the user wants to receive decoded tx data
     if *receive_decoded_tx {
-        let decoded_tx_data = decode_tx_data(&alert.tx_hash);
-        println!("{}", &decoded_tx_data);
-        message = format!("An alert was raised for the following transaction: \n\n {:?} \n\nHere's the decoded transaction data: \n {} ", &alert.tx_hash, &decoded_tx_data);
+        let decoded_tx_data = decode_tx_data(&alert.tx_hash).await;
+        if alert.token_address == H160::zero() {
+            message = format!("An alert was raised for the following transaction: \n {:?} \n\nWith a ETH value of {:?} \n\nHere's the decoded transaction data: \n {} ", &alert.tx_hash, &alert.tx_value, &decoded_tx_data);
+        } else {
+            message = format!("An alert was raised for the following transaction: \n {:?} \n\nRegarding the token {:?} \n\nWith a value of {:?} \n\nHere's the decoded transaction data: \n {} ", &alert.tx_hash, &alert.token_address, &alert.tx_value, &decoded_tx_data);
+        }
     } else {
         message = format!(
             "An alert was raised for the following transaction: \n\n {:?}",
@@ -156,7 +163,7 @@ async fn send_telegram_alert(
 }
 
 // Decodes the transaction data using Heimdall
-fn decode_tx_data(tx: &H256) -> String {
+async fn decode_tx_data(tx: &H256) -> String {
     // Attempt to execute the command
     let output = match Command::new("/home/amaechi/.bifrost/bin/heimdall")
         .arg("decode")
@@ -189,10 +196,22 @@ fn get_alert_config() -> SimpleAlertConfig {
             H160::from_str(UNI_V3_ROUTER).unwrap(),
             H160::from_str(LIDO_STETH).unwrap(),
         ],
-        wallet_tracker: vec![WalletTrackerConfig {
-            token_address: H160::zero(),
-            min_tx_value: U256::from(1 / 100),
-        }],
+        wallet_tracker: vec![
+            // WalletTrackerConfig {
+            //     token_address: H160::zero(),
+            //     min_tx_value: U256::from(1 / 100),
+            // },
+            WalletTrackerConfig {
+                token_address: H160::from_str("0xa0b86991c6218b36c1d19d4a2e9eb0ce3606eb48")
+                    .unwrap(), // USDC
+                min_tx_value: U256::from(1 / 100),
+            },
+            WalletTrackerConfig {
+                token_address: H160::from_str("0xdac17f958d2ee523a2206206994597c13d831ec7")
+                    .unwrap(), // USDT
+                min_tx_value: U256::from(1 / 100),
+            },
+        ],
         invariant_conditions: InvariantConditions {
             calldata: "".to_string(),
         },
@@ -202,25 +221,61 @@ fn get_alert_config() -> SimpleAlertConfig {
     }
 }
 
-pub fn extract_token_transfer(tx_data: &str) -> Result<(Address, U256), &'static str> {
-    // Check if the transaction data is a token transfer
+pub fn extract_maybe_token_transfer(
+    tx_data: &str,
+) -> Result<(Vec<Address>, Vec<U256>), &'static str> {
+    let mut token_addresses = Vec::new();
+    let mut token_values = Vec::new();
+
+    // Most contain at least an address and a value
     if tx_data.len() < 138 {
-        return Err("Transaction data is not a token transfer");
+        return Err("Transaction data is too short");
     }
 
-    // Extract the token address and value from the transaction data
-    let token_address = &tx_data[34..74];
-    let token_value = &tx_data[74..138];
+    // Function selector is 10 characters long so skip that
+    let remaining_tx_data = &tx_data[10..];
+    let remaining_tx_data_len = remaining_tx_data.len();
 
-    // Decode the token address and value
-    let token_address = decode(token_address).unwrap();
-    let token_value = decode(token_value).unwrap();
+    // Loop through the remaining tx data in 64 character chunks
+    for i in (0..remaining_tx_data_len).step_by(64) {
+        // Ensure the slice does not exceed the string length
+        if i + 64 > remaining_tx_data_len {
+            break;
+        }
 
-    // Convert the token address and value to the correct types
-    let token_address = Address::from_slice(&token_address);
-    let token_value = U256::from_big_endian(&token_value);
+        // Extract the next 64 characters
+        let next_64_chars = &remaining_tx_data[i..i + 64];
+        let decoded = decode(next_64_chars).map_err(|_| "Failed to decode hex")?;
 
-    Ok((token_address, token_value))
+        // All decoded chunks are 32 bytes long
+        // Address have first 12 bytes as 0 so we need to check for that
+
+        let mut is_maybe_address = false;
+
+        for j in 0..12 {
+            if decoded[j] != 0 {
+                break;
+            } else {
+                is_maybe_address = true;
+            }
+        }
+
+        if decoded[13] == 0 {
+            is_maybe_address = false;
+        }
+
+        if is_maybe_address {
+            // If the decoded chunk is 20 bytes long, it's an address
+            let address = Address::from_slice(&decoded[12..]);
+            token_addresses.push(address);
+        } else {
+            // If the decoded chunk is 32 bytes long, it's a value
+            let value = U256::from_big_endian(&decoded);
+            token_values.push(value);
+        }
+    }
+
+    Ok((token_addresses, token_values))
 }
 
 // Decodes the contract data using Heimdall
