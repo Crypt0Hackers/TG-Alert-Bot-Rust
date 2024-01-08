@@ -21,8 +21,6 @@ const LIDO_STETH: &str = "0xae7ab96520DE3A18E5e111B5EaAb095312D7fE84";
 struct SimpleAlertConfig {
     monitored_protocols: Vec<H160>, // List of protocols to monitor
     wallet_tracker: Vec<WalletTrackerConfig>, // Conditions to trigger an alert
-    invariant_conditions: InvariantConditions, // Conditions to trigger an invariant alert
-    is_custom: bool,                // Decide whether we use calldata or predefined conditions
     receive_decoded_tx: bool,       // Decide whether to receive decoded tx data or not
     chat_id: String,                // Telegram chat id
 }
@@ -37,15 +35,6 @@ struct WalletAlert {
     token_address: H160,
     tx_value: U256,
     is_alert: bool,
-}
-
-// TODO
-struct InvariantAlert {
-    tx_hash: H256,
-}
-// TODO
-struct InvariantConditions {
-    calldata: String, // Calldata to trigger an invariant check
 }
 
 pub async fn loop_mempool(ws_provider: Arc<Provider<Ws>>) {
@@ -212,10 +201,6 @@ fn get_alert_config() -> SimpleAlertConfig {
                 min_tx_value: U256::from(1 / 100),
             },
         ],
-        invariant_conditions: InvariantConditions {
-            calldata: "".to_string(),
-        },
-        is_custom: false,
         receive_decoded_tx: true,
         chat_id: "1782643511".to_string(),
     }
